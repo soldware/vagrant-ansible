@@ -1,5 +1,3 @@
----
-
 # README — Vagrant + Ansible Infrastructure Setup
 This repository contains configuration files to provision a **3-node local development environment** simulating a production-like infrastructure using:
 
