@@ -1,8 +1,6 @@
 ---
 
 # README — Vagrant + Ansible Infrastructure Setup
-
-## Overview
 This repository contains configuration files to provision a **3-node local development environment** simulating a production-like infrastructure using:
 
 * **Vagrant** to spin up 3 Debian 12 virtual machines (Flask app server, Nginx reverse proxy, MongoDB server)
