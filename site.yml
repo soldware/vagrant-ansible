@@ -1,0 +1,183 @@
+---
+- name: Setup Flask app server
+  hosts: flask
+  become: yes
+  vars:
+    flask_app_dir: /home/vagrant/flaskapp
+    flask_image_name: myflaskapp
+    flask_container_name: flaskapp
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Ensure Docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Create Flask app directory
+      file:
+        path: "{{ flask_app_dir }}"
+        state: directory
+        owner: vagrant
+        group: vagrant
+
+    - name: Copy Flask app files
+      copy:
+        src: ./flaskapp/
+        dest: "{{ flask_app_dir }}/"
+        owner: vagrant
+        group: vagrant
+        mode: 0755
+
+    - name: Build Flask Docker image
+      community.docker.docker_image:
+        build:
+          path: "{{ flask_app_dir }}"
+        name: "{{ flask_image_name }}"
+
+    - name: Create systemd service file for Flask Docker container
+      copy:
+        dest: /etc/systemd/system/{{ flask_container_name }}.service
+        content: |
+          [Unit]
+          Description=Flask Docker Container
+          Requires=docker.service
+          After=docker.service
+
+          [Service]
+          Restart=always
+          ExecStart=/usr/bin/docker run --rm -p 5000:5000 --name {{ flask_container_name }} {{ flask_image_name }}
+          ExecStop=/usr/bin/docker stop {{ flask_container_name }}
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Reload systemd
+
+    - name: Enable and start Flask Docker service
+      systemd:
+        name: "{{ flask_container_name }}"
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: Reload systemd
+      command: systemctl daemon-reload
+
+- name: Setup Nginx reverse proxy server
+  hosts: nginx
+  become: yes
+  vars:
+    flask_instance_ip: 192.168.56.10
+    nginx_site_name: flask_proxy
+  tasks:
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Enable and start Nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Create Nginx site config
+      copy:
+        dest: "/etc/nginx/sites-available/{{ nginx_site_name }}"
+        content: |
+          server {
+              listen 80;
+              server_name _;
+              location / {
+                  proxy_pass http://{{ flask_instance_ip }}:5000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+      notify: Reload Nginx
+
+    - name: Enable Nginx site
+      file:
+        src: "/etc/nginx/sites-available/{{ nginx_site_name }}"
+        dest: "/etc/nginx/sites-enabled/{{ nginx_site_name }}"
+        state: link
+      notify: Reload Nginx
+
+    - name: Remove default site config if exists
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+  handlers:
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
+
+- name: Setup MongoDB server
+  hosts: mongodb
+  become: yes
+  tasks:
+    - name: Add MongoDB repo key
+      apt_key:
+        url: https://www.mongodb.org/static/pgp/server-6.0.asc
+        state: present
+
+    - name: Add MongoDB repo
+      apt_repository:
+        repo: 'deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/6.0 main'
+        state: present
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install MongoDB
+      apt:
+        name: mongodb-org
+        state: present
+
+    - name: Create mongouser system user
+      user:
+        name: mongouser
+        system: yes
+        shell: /usr/sbin/nologin
+
+    - name: Change ownership of MongoDB data and log dirs
+      file:
+        path: "{{ item }}"
+        owner: mongouser
+        group: mongouser
+        recurse: yes
+      loop:
+        - /var/lib/mongodb
+        - /var/log/mongodb
+
+    - name: Configure mongod to run as mongouser
+      blockinfile:
+        path: /etc/systemd/system/mongod.service.d/override.conf
+        create: yes
+        block: |
+          [Service]
+          User=mongouser
+          Group=mongouser
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start mongod
+      systemd:
+        name: mongod
+        state: started
+        enabled: yes
+
